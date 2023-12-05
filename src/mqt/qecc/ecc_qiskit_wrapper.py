@@ -4,23 +4,40 @@ from __future__ import annotations
 
 import argparse
 import locale
+import logging
 import pathlib
 from typing import TYPE_CHECKING
 
+from qiskit import QuantumCircuit, compiler
+from qiskit.providers.exceptions import QiskitBackendNotFoundError
 from qiskit.qasm2 import dump, load, loads
 from qiskit_aer import AerSimulator
-from qiskit_aer.noise import (
-    NoiseModel,
-    QuantumError,
-    amplitude_damping_error,
-    depolarizing_error,
-    pauli_error,
-)
+from qiskit_aer.noise import (NoiseModel, QuantumError,
+                              amplitude_damping_error, depolarizing_error,
+                              pauli_error)
+from qiskit_ibm_provider import IBMProvider
+from qiskit_ibm_runtime.fake_provider import FakeProviderForBackendV2
 
 from . import apply_ecc
 
 if TYPE_CHECKING:  # pragma: no cover
     from qiskit.result import Result
+
+
+def get_backend(backend_name: str):
+    if "fake" in backend_name:
+        provider = FakeProviderForBackendV2()
+        backends = provider._backends
+        backend = backends[0]
+        if backend_name:
+            filtered_backends = [backend for backend in backends if backend.name == backend_name]
+            if not filtered_backends:
+                raise QiskitBackendNotFoundError("No backend matches the criteria")
+
+            backend = filtered_backends[0]
+    else:
+        provider = IBMProvider().get_backend(backend_name)
+    return backend
 
 
 def compose_error(error: QuantumError, new_error: QuantumError) -> QuantumError:
@@ -138,9 +155,34 @@ def main() -> None:
         default=100,
         help="Specify after how many qubit usages error correction is applied to it (Default=100)",
     )
+    parser.add_argument(
+        "-bnd",
+        type=str,
+        default=None,
+        required=False,
+        help="Specify qiskit backend",
+    )
+    parser.add_argument(
+        "-topl",
+        type=int,
+        default=0,
+        required=False,
+        help="Specify qiskit transpiler optimization level",
+    )
+    parser.add_argument(
+        "-log",
+        type=str,
+        default="ERROR",
+        required=False,
+        help="Specify logger level",
+    )
 
     args = parser.parse_args()
     assert args is not None
+
+    numeric_level = getattr(logging, args.log.upper(), None)
+    logging.basicConfig(level=numeric_level)
+
     error_channels = args.m
     error_probability = args.p
     number_of_shots = args.n
@@ -148,6 +190,8 @@ def main() -> None:
     open_qasm_file = args.f
 
     forced_simulator = None if args.fs.lower() == "none" else args.fs
+    backend_name = args.bnd
+    transpiler_optimization_level = args.topl
 
     ecc = None if args.ecc.lower() == "none" else args.ecc
 
@@ -160,10 +204,15 @@ def main() -> None:
         )
 
     # Creating the noise model
-    if error_probability > 0:
-        noise_model = create_noise_model(n_model=error_channels, p_error=error_probability)
+    if backend_name is not None:
+        backend = get_backend(backend_name)
+        if "fake" in backend_name:
+            noise_model = NoiseModel.from_backend(backend)
     else:
-        noise_model = NoiseModel()
+        if error_probability > 0:
+            noise_model = create_noise_model(n_model=error_channels, p_error=error_probability)
+        else:
+            noise_model = NoiseModel()
 
     circ = load(open_qasm_file)
 
@@ -200,7 +249,16 @@ def main() -> None:
     )
 
     # Setting the simulator backend to the requested one
-    simulator_backend = AerSimulator(method=forced_simulator, noise_model=noise_model)
+    if "fake" in backend_name:
+        simulator_backend = AerSimulator(method=forced_simulator, noise_model=noise_model)
+    else:
+        simulator_backend = backend
+
+    circ = compiler.transpile(
+        circ,
+        optimization_level=transpiler_optimization_level,
+        backend=simulator_backend,
+    )
 
     job_result = simulator_backend.run(circ, shots=number_of_shots, seed_simulator=seed).result()
 
