@@ -170,6 +170,13 @@ def main() -> None:
         help="Specify qiskit transpiler optimization level",
     )
     parser.add_argument(
+        "-plt",
+        action="store_true",
+        default=False,
+        required=False,
+        help="Plot circuit(s)",
+    )
+    parser.add_argument(
         "-log",
         type=str,
         default="ERROR",
@@ -197,6 +204,8 @@ def main() -> None:
 
     ecc_frequency = args.fq
     ecc_export_filename = args.e
+    circ_plt = args.plt
+
     if forced_simulator is not None and "stabilizer" in forced_simulator and "A" in error_channels:
         print(  # noqa: T201
             'Warning: Non-unitary errors (such as for example amplitude damping ("A")) are not suitable for simulation '
@@ -224,15 +233,15 @@ def main() -> None:
     if ecc is not None:
         # Applying error correction to the circuit
         result = apply_ecc(circ, ecc, ecc_frequency)
-        circ = loads(result["circ"])
+        ecc_circ = loads(result["circ"])
 
     if ecc_export_filename is not None:
         print("Exporting circuit to: " + str(ecc_export_filename))  # noqa: T201
         with pathlib.Path(ecc_export_filename).open("w", encoding=locale.getpreferredencoding(False)) as f:
-            dump(circ, f)
+            dump(ecc_circ, f)
         return
 
-    size = circ.num_qubits
+    size = ecc_circ.num_qubits
     print(  # noqa: T201
         "_____Trying to simulate with "
         + str(error_channels)
@@ -254,13 +263,33 @@ def main() -> None:
     else:
         simulator_backend = backend
 
-    circ = compiler.transpile(
-        circ,
+    trp_circ = compiler.transpile(
+        ecc_circ,
         optimization_level=transpiler_optimization_level,
         backend=simulator_backend,
     )
 
-    job_result = simulator_backend.run(circ, shots=number_of_shots, seed_simulator=seed).result()
+    def get_circ_info(circuit: QuantumCircuit, plt_style: str = "text") -> None:
+        circuit.draw("mpl", scale=0.5, filename=f"{circuit.name}.png", fold=50)
+        print(f" Qubits: {circuit.num_qubits}")
+        print(f" Ancillas: {circuit.num_ancillas}")
+        print(f" Depth: {circuit.depth()}")
+
+    if circ_plt:
+        base_filename = open_qasm_file.split("/")[-1].removesuffix(".qasm")
+        print("Original circuit")
+        circ.name = f"{base_filename}"
+        get_circ_info(circ)
+
+        print("ECC circuit")
+        ecc_circ.name = f"ecc_{base_filename}"
+        get_circ_info(ecc_circ)
+
+        print("Transpile circuit")
+        trp_circ.name = f"trp_{base_filename}"
+        get_circ_info(trp_circ)
+
+    job_result = simulator_backend.run(trp_circ, shots=number_of_shots, seed_simulator=seed).result()
 
     if job_result.status != "COMPLETED":
         raise RuntimeError("Simulation exited with status: " + str(job_result.status))
