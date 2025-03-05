@@ -15,7 +15,9 @@ from qiskit_aer import AerSimulator
 from qiskit_aer.noise import (NoiseModel, QuantumError,
                               amplitude_damping_error, depolarizing_error,
                               pauli_error)
-from qiskit_ibm_provider import IBMProvider
+from qiskit_aer.primitives import SamplerV2 as Aer_sampler
+from qiskit_ibm_runtime import QiskitRuntimeService
+from qiskit_ibm_runtime import SamplerV2 as Sampler
 from qiskit_ibm_runtime.fake_provider import FakeProviderForBackendV2
 
 from . import apply_ecc
@@ -36,7 +38,7 @@ def get_backend(backend_name: str):
 
             backend = filtered_backends[0]
     else:
-        provider = IBMProvider().get_backend(backend_name)
+        backend = QiskitRuntimeService().backend(backend_name)
     return backend
 
 
@@ -259,9 +261,16 @@ def main() -> None:
 
     # Setting the simulator backend to the requested one
     if "fake" in backend_name:
+        import pdb
+
+        pdb.set_trace()
         simulator_backend = AerSimulator(method=forced_simulator, noise_model=noise_model)
+        sampler = Aer_sampler().from_backend(backend=backend)
+    elif "ibm" in backend_name:
+        sampler = Sampler(backend)
     else:
         simulator_backend = backend
+        sampler = Aer_sampler(simulator_backend)
 
     trp_circ = compiler.transpile(
         ecc_circ,
@@ -289,7 +298,8 @@ def main() -> None:
         trp_circ.name = f"trp_{base_filename}"
         get_circ_info(trp_circ)
 
-    job_result = simulator_backend.run(trp_circ, shots=number_of_shots, seed_simulator=seed).result()
+    job_result = sampler.run([trp_circ], shots=number_of_shots).result()
+    # job_result = simulator_backend.run(trp_circ, shots=number_of_shots, seed_simulator=seed).result()
 
     if job_result.status != "COMPLETED":
         raise RuntimeError("Simulation exited with status: " + str(job_result.status))
